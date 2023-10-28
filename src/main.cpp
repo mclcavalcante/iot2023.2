@@ -1,0 +1,152 @@
+#include <Arduino.h>
+#include <WiFiClientSecure.h>
+#include <MQTTClient.h>
+#include <ArduinoJson.h>
+#include "WiFi.h"
+#include "secrets.h"
+#include "IRremote.h"
+#include <DHT.h> //temperatura
+
+// The MQTT topics that this device should publish/subscribe
+#define AWS_IOT_PUBLISH_TOPIC   "sala07/qet_QoA"
+#define AWS_IOT_SUBSCRIBE_TOPIC "sala07/alarm"
+
+#define DHTTYPE DHT11
+#define DHTPIN 5
+
+WiFiClientSecure net = WiFiClientSecure();
+MQTTClient client = MQTTClient(256);
+DHT dht(DHTPIN, DHTTYPE);
+
+int buzzer = 19; 
+int LED_mq7 = 18; 
+int LED_mq2 = 21;            /*LED pin defined*/
+int Sensor_input_mq2 = 36;    /*Digital pin 5 for sensor qualidade do ar*/
+int Sensor_input_mq7 = 34; 
+
+
+void messageHandler(String &topic, String &payload) {
+  // StaticJsonDocument<200> message;
+  // if (payload["message"] == true){
+
+  // }
+  digitalWrite(buzzer, LOW);
+  Serial.println("incoming: " + topic + " - " + payload);
+
+  delay(3000);
+  digitalWrite(buzzer, HIGH);
+
+}
+
+void connectAWS()
+{
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.println("Connecting to Wi-Fi");
+
+  while (WiFi.status() != WL_CONNECTED){
+    delay(500);
+    Serial.print(".");
+  }
+
+  // Configure WiFiClientSecure to use the AWS IoT device credentials
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+
+  // Connect to the MQTT broker on the AWS endpoint we defined earlier
+  client.begin(AWS_IOT_ENDPOINT, 8883, net);
+
+  // Create a message handler
+  client.onMessage(messageHandler);
+
+  Serial.print("Connecting to AWS IOT");
+
+  while (!client.connect(THINGNAME)) {
+    Serial.print(".");
+    delay(100);
+  }
+
+  if(!client.connected()){
+    Serial.println("AWS IoT Timeout!");
+    return;
+  }
+
+  // Subscribe to a topic
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+
+  Serial.println("AWS IoT Connected!");
+}
+
+void setup() {
+  Serial.begin(115200);
+  connectAWS();
+  pinMode(LED_mq2, OUTPUT);  /*LED set as Output*/
+  pinMode(LED_mq7, OUTPUT);  /*LED set as Output*/ 
+
+  dht.begin();
+}
+
+void publishMessage(StaticJsonDocument<200> message, String topic)
+{
+  char jsonBuffer[512];
+  serializeJson(message, jsonBuffer); // print to client
+
+  client.publish(topic, jsonBuffer);
+}
+
+void loop() {
+  float temperature_Aout = dht.readTemperature();
+  int sensor_Aout_mq2 = analogRead(Sensor_input_mq2);  /*Analog value read function*/
+  int sensor_Aout_mq7 = analogRead(Sensor_input_mq7);
+
+  StaticJsonDocument<200> message_air;
+  message_air["Air quality Sensor:"] = sensor_Aout_mq2;
+
+  Serial.print("Air quality Sensor: \t");  
+  Serial.print(sensor_Aout_mq2);   /*Read value printed*/
+  Serial.print("\t");
+  if (sensor_Aout_mq2 > 350) {    /*if condition with threshold 1800*/
+    message_air["status"] = "Gas";
+    Serial.println("Gas");  
+    digitalWrite (LED_mq2, LOW) ; /*LED set HIGH if Gas detected */
+  }
+  else {
+    message_air["status"] = "No Gas";
+    Serial.println("No Gas");
+    digitalWrite (LED_mq2, HIGH) ;  /*LED set LOW if NO Gas detected */
+  }
+  
+  publishMessage(message_air, "sala07/get_QoA");
+  client.loop();
+
+  StaticJsonDocument<200> message_fire;
+  message_fire["Fire Sensor:"] = sensor_Aout_mq7;
+
+  Serial.print("Fire Sensor: \t \t");  
+  Serial.print(sensor_Aout_mq7);   /*Read value printed*/
+  Serial.print("\t");
+  if (sensor_Aout_mq7 > 350) {    /*if condition with threshold 1800*/
+    message_fire["status"] = "Fire";
+    Serial.println("Fire");  
+    digitalWrite (LED_mq7, LOW) ; /*LED set HIGH if Gas detected */
+  }
+  else {
+    message_fire["status"] = "No Fire";
+    Serial.println("No Fire");
+    digitalWrite (LED_mq7, HIGH) ;  /*LED set LOW if NO Gas detected */
+  }
+  publishMessage(message_fire, "sala07/get_fire");
+  client.loop();
+
+  StaticJsonDocument<200> message_temp;
+  message_temp["Temperature Sensor:"] = temperature_Aout;
+  Serial.print("Temperature Sensor: \t");  
+  Serial.println(temperature_Aout);   /*Read value printed*/
+  publishMessage(message_temp, "sala07/get_temperature");
+  client.loop();
+
+  delay(1000);
+
+}
