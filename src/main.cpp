@@ -4,37 +4,74 @@
 #include <ArduinoJson.h>
 #include "WiFi.h"
 #include "secrets.h"
-#include "IRremote.h"
 #include <DHT.h> //temperatura
 
 // The MQTT topics that this device should publish/subscribe
 #define AWS_IOT_PUBLISH_TOPIC   "sala07/qet_QoA"
-#define AWS_IOT_SUBSCRIBE_TOPIC "sala07/alarm"
+#define AWS_IOT_SUBSCRIBE_TOPIC_AIRCONDITIONER "sala07/set_airconditioner"
+#define AWS_IOT_SUBSCRIBE_TOPIC_TEMP "sala07/get_temperature"
 
 #define DHTTYPE DHT11
 #define DHTPIN 5
+
+int currentTemp = 20;
+int airOn = false;
 
 WiFiClientSecure net = WiFiClientSecure();
 MQTTClient client = MQTTClient(256);
 DHT dht(DHTPIN, DHTTYPE);
 
-int buzzer = 19; 
-int LED_mq7 = 18; 
-int LED_mq2 = 21;            /*LED pin defined*/
+int LED_temp_down = 18; 
+int LED_temp_up = 23; 
+int LED_air_on = 21;            /*LED pin defined*/
 int Sensor_input_mq2 = 36;    /*Digital pin 5 for sensor qualidade do ar*/
 int Sensor_input_mq7 = 34; 
 
+void airconditioner(String &payload) {
+  StaticJsonDocument<200> doc;
+  deserializeJson(doc, payload);
+  const char* message = doc["message"];
+
+  if (strcmp(message, "1") == 0){
+    airOn = true;
+    digitalWrite (LED_air_on, HIGH) ; /*LED set HIGH */
+  } else if (strcmp(message, "0") == 0){
+    airOn = false;
+    digitalWrite (LED_air_on, LOW) ;  /*LED set LOW if NO Gas detected */
+  }
+}
+
+void setTemperature(String &payload) {
+  StaticJsonDocument<200> doc;
+  deserializeJson(doc, payload);
+  const char* message = doc["message"];
+
+  if (airOn) {
+    int temp = atoi(message);
+    if (temp > currentTemp){
+      digitalWrite (LED_temp_up, HIGH) ; /*LED set HIGH */
+      delay(2000);
+      digitalWrite (LED_temp_up, LOW) ; /*LED set HIGH */
+    } else {
+      digitalWrite (LED_temp_down, HIGH) ;  /*LED set LOW if NO Gas detected */
+      delay(2000);
+      digitalWrite (LED_temp_down, LOW) ; /*LED set HIGH */
+    }
+    currentTemp = temp;
+  }
+}
 
 void messageHandler(String &topic, String &payload) {
-  // StaticJsonDocument<200> message;
-  // if (payload["message"] == true){
-
-  // }
-  digitalWrite(buzzer, LOW);
+  // digitalWrite(buzzer, LOW);
   Serial.println("incoming: " + topic + " - " + payload);
 
-  delay(3000);
-  digitalWrite(buzzer, HIGH);
+  if (topic == AWS_IOT_SUBSCRIBE_TOPIC_AIRCONDITIONER) {
+    airconditioner(payload);
+  }
+  if (topic == AWS_IOT_SUBSCRIBE_TOPIC_TEMP) {
+    setTemperature(payload);
+  }
+
 
 }
 
@@ -74,7 +111,8 @@ void connectAWS()
   }
 
   // Subscribe to a topic
-  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC_AIRCONDITIONER);
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC_TEMP);
 
   Serial.println("AWS IoT Connected!");
 }
@@ -82,8 +120,9 @@ void connectAWS()
 void setup() {
   Serial.begin(115200);
   connectAWS();
-  pinMode(LED_mq2, OUTPUT);  /*LED set as Output*/
-  pinMode(LED_mq7, OUTPUT);  /*LED set as Output*/ 
+  pinMode(LED_air_on, OUTPUT);  /*LED set as Output*/
+  pinMode(LED_temp_down, OUTPUT);  /*LED set as Output*/ 
+  pinMode(LED_temp_up, OUTPUT);  /*LED set as Output*/ 
 
   dht.begin();
 }
@@ -110,15 +149,13 @@ void loop() {
   if (sensor_Aout_mq2 > 350) {    /*if condition with threshold 1800*/
     message_air["status"] = "Gas";
     Serial.println("Gas");  
-    digitalWrite (LED_mq2, LOW) ; /*LED set HIGH if Gas detected */
   }
   else {
     message_air["status"] = "No Gas";
     Serial.println("No Gas");
-    digitalWrite (LED_mq2, HIGH) ;  /*LED set LOW if NO Gas detected */
   }
   
-  publishMessage(message_air, "sala07/get_QoA");
+  publishMessage(message_air, "sala07/set_QoA");
   client.loop();
 
   StaticJsonDocument<200> message_fire;
@@ -130,21 +167,19 @@ void loop() {
   if (sensor_Aout_mq7 > 350) {    /*if condition with threshold 1800*/
     message_fire["status"] = "Fire";
     Serial.println("Fire");  
-    digitalWrite (LED_mq7, LOW) ; /*LED set HIGH if Gas detected */
   }
   else {
     message_fire["status"] = "No Fire";
     Serial.println("No Fire");
-    digitalWrite (LED_mq7, HIGH) ;  /*LED set LOW if NO Gas detected */
   }
-  publishMessage(message_fire, "sala07/get_fire");
+  publishMessage(message_fire, "sala07/set_fire");
   client.loop();
 
   StaticJsonDocument<200> message_temp;
   message_temp["Temperature Sensor:"] = temperature_Aout;
   Serial.print("Temperature Sensor: \t");  
   Serial.println(temperature_Aout);   /*Read value printed*/
-  publishMessage(message_temp, "sala07/get_temperature");
+  publishMessage(message_temp, "sala07/set_temperature");
   client.loop();
 
   delay(1000);
